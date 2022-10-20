@@ -13,9 +13,6 @@ start_actors(0,_)->
     ok;
 
 start_actors(NumNodes, NumRequests)->
-    start(NumRequests);
-
-start_actors(NumNodes, NumRequests)->
     start(NumRequests),
     start_actors(NumNodes-1, NumRequests).
 
