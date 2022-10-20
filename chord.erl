@@ -2,12 +2,13 @@
 -compile(export_all).
 -author("Tomas Delclaux Rodriguez-Rey and Ariel Weitzenfeld").
 
+getHash(Data) ->  
+    binary:decode_unsigned(crypto:hash(sha, Data)).
 
 init()->
     {ok,[NumNodes, NumRequests]} = io:fread("", "~d~d"),
     start_actors(NumNodes,NumRequests),
     ok.
-
 
 start_actors(0,_)->
     ok;
@@ -35,8 +36,6 @@ loop(NumRequests)->
 
 stop()->
     exit(self(),kill).
-
-
 
 
 
