@@ -3,9 +3,19 @@
 -author("Tomas Delclaux Rodriguez-Rey and Ariel Weitzenfeld").
 -record(chord, {id, finger, successor, predecessor, key, numrequests}).
 -record(tracker, {numNodes, finishedNodes}).
+-define(M, 160).
 
 getHash(Data) ->  
     binary:decode_unsigned(crypto:hash(sha, Data)).
+
+% getNext(FingerTable)->
+%     %%TODO
+
+%% join()->
+    %%TODO
+
+
+%% need to implement stabilise too
 
 init()->
     {ok,[NumNodes, NumRequests]} = 
@@ -25,7 +35,7 @@ start(NumRequests)->
     ActorPid = spawn_link(?MODULE, loop, [Chord]),
     PidHash = getHash(pid_to_list(ActorPid)),
     register(PidHash, ActorPid),
-    ok.
+    {ok, PidHash}.
       
 chordNode(Chord)->
     receive
@@ -47,25 +57,25 @@ stop()->
 
 
 %%ACTOR TO KEEP TRACK OF FINISHING ACTORS
-track(Track)->
+track(State)->
     receive
         {finish, Pid}->
-            S2 = sets:add_element(Pid, Track#tracker.finishedNodes),
-            NewTrack=Track#tracker{finishedNodes=S2},
+            S2 = sets:add_element(Pid, State#tracker.finishedNodes),
+            NewTrack=State#tracker{finishedNodes=S2},
             track(NewTrack)
     after 10 ->
-        L = sets:to_list(Track#tracker.finishedNodes),
-        NumActors=Track#tracker.numNodes,
+        L = sets:to_list(State#tracker.finishedNodes),
+        NumActors=State#tracker.numNodes,
         case length(L) of
             NumActors -> 
                 io:format("All finished, need to avg calculation");
-            _->track(Track)
+            _->track(State)
         end
     end.
 
 startTrack()->
     statistics(wall_clock),
     Set = sets:new(),
-    Track= #tracker{numNodes=0, finishedNodes=Set},
-    ActorPid = spawn_link(?MODULE, track, [Track]),
+    State= #tracker{numNodes=0, finishedNodes=Set},
+    ActorPid = spawn_link(?MODULE, track, [State]),
     register(list_to_atom("chord_tracker"), ActorPid).
