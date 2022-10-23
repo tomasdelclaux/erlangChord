@@ -17,26 +17,56 @@ getHash(Data) ->
 
 %% need to implement stabilise too
 
+create_finger_table(_,0)->
+    [];
+
+create_finger_table(ID,M)->
+    [ID|create_finger_table(ID,M-1)].
+
+finger_print([])-> 
+    [];
+
+finger_print([H|T]) ->
+    io:format("    ~p~n", [H]),
+    [H|finger_print(T)].
+
+
 init()->
     {ok,[NumNodes, NumRequests]} = 
         io:fread("Enter number of chord nodes and number of requests", "~d~d"),
-    start_chord_nodes(NumNodes,NumRequests),
     ok.
 
-start_chord_nodes(0,_)->
-    ok;
+create(NumRequests)->
+    Chord=#chord{},
+    NodePid = spawn_link(?MODULE, chordNode, [Chord]),
+    ID=getHash(pid_to_list(NodePid)),
+    register(list_to_atom(integer_to_list(ID)), NodePid),
+    Finger=create_finger_table(ID,?M),
+    Key=getHash("1"),
+    String="I am node 1",
+    Map=#{Key=> String},
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, key=Map, numrequests=NumRequests},
+    NodePid ! {update, UpdateChord},
+    ok.
 
-start_chord_nodes(NumNodes, NumRequests)->
-    start(NumRequests),
-    start_chord_nodes(NumNodes-1, NumRequests).
+% join(Node, )
 
-start(NumRequests)->
-    Chord=#chord{numrequests=NumRequests},
-    ActorPid = spawn_link(?MODULE, loop, [Chord]),
-    PidHash = getHash(pid_to_list(ActorPid)),
-    register(PidHash, ActorPid),
-    {ok, PidHash}.
-      
+% start(NumRequests)->
+%     Chord=#chord{numrequests=NumRequests},
+%     ActorPid = spawn_link(?MODULE, loop, [Chord]),
+%     PidHash = getHash(pid_to_list(ActorPid)),
+%     register(PidHash, ActorPid),
+%     ok.
+printNode(Chord)->
+    io:format("OUTPUTTING STATE OF NODE:\n"),
+    io:format("ID: ~w~n", [Chord#chord.id]),
+    io:format("Finger~n"),
+    finger_print(Chord#chord.finger),
+    io:format("Predecessor: ~w~n", [Chord#chord.predecessor]),
+    io:format("Successor: ~w~n", [Chord#chord.successor]),
+    io:format(lists:flatten(io_lib:format("~p", [maps:to_list(Chord#chord.key)]))),
+    io:format("~nnumRequests: ~w~n", [Chord#chord.numrequests]).
+
 chordNode(Chord)->
     receive
         {lookup, Key} ->io:format("where is this key"),
@@ -46,17 +76,27 @@ chordNode(Chord)->
                 chordNode(Chord);
             _->
                 NewChord=Chord#chord{numrequests=Num-1},
-                chordNode(NewChord)
+                self() ! {update, NewChord},
+                chordNode(Chord)         
         end;
-        {terminate} -> io:format("received signal to stop")
+        {update, UpdateChord}->
+            chordNode(UpdateChord);
+        {terminate} -> io:format("received signal to stop");
+        print->
+            printNode(Chord),
+            chordNode(Chord)
     end,
     ok.
 
 stop()->
     exit(self(),kill).
 
+print(Pid)->
+    Pid ! print,
+    ok.
 
 %%ACTOR TO KEEP TRACK OF FINISHING ACTORS
+%%TRACKER FUNCTIONS
 track(State)->
     receive
         {finish, Pid}->
@@ -68,10 +108,18 @@ track(State)->
         NumActors=State#tracker.numNodes,
         case length(L) of
             NumActors -> 
-                io:format("All finished, need to avg calculation");
+                io:format("All finished, need to avg calculation"),
+                sendTerminate(NumActors, L);
             _->track(State)
         end
     end.
+
+sendTerminate(0,_)->
+    ok;
+
+sendTerminate(NumActors,List)->
+    lists:nth(NumActors-1,List) ! terminate,
+    sendTerminate(NumActors-1, lists:nth(NumActors-2,List)).
 
 startTrack()->
     statistics(wall_clock),
