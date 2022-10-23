@@ -36,41 +36,46 @@ finger_print([H|T],ID, M) ->
 getHash(Data) ->  
     binary:decode_unsigned(crypto:hash(sha, Data)).
 
+%%USER FUNCTIONS
+insert(Node,Data)->
+    String="I am node "++integer_to_list(Data),
+    Key=list_to_atom(integer_to_list(getHash(integer_to_list(Data)))),
+    whereis(Node) ! {find_insert_point, Key, Node, String}.
+
+search(Node, Data)->
+    Key=list_to_atom(integer_to_list(getHash(integer_to_list(Data)))),
+    whereis(Node) ! {search_key, Key, Node}.
+
 %% CHORD NODE API
 
 %CREATE A NODE AND A NETWORK WITH THE GIVEN NUMBER OF REQUESTS
-create(NumRequests, NodeNum)->
+create(NumRequests)->
     Chord=#chord{},
     Finger=create_finger_table(?M),
     NodePid = spawn_link(?MODULE, chordNode, [Chord]),
     Id=getHash(pid_to_list(NodePid)),
     ID=list_to_atom(integer_to_list(Id)),
     register(ID, NodePid),
-    Key=getHash(integer_to_list(NodeNum)),
-    String="I am node 1",
-    Map=#{Key=> String},
-    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests, next=?M},
+    Key=maps:new(),
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Key, numrequests=NumRequests, next=?M},
     NodePid ! {update, UpdateChord},
     {ok, ID}.
 
 %JOIN FUNCTION - NEW NODE IS N and NPRIME IS A NODE IN THE NETWORK
-join(NPrime, NumRequests, NodeNum)->
+join(NPrime, NumRequests)->
     Chord=#chord{},
     Finger=create_finger_table(?M),
     NodePid = spawn_link(?MODULE, chordNode, [Chord]),
     Id=getHash(pid_to_list(NodePid)),
     ID=list_to_atom(integer_to_list(Id)),
     register(ID, NodePid),
-    Key=getHash(integer_to_list(NodeNum)),
-    String="I am node "++integer_to_list(NodeNum),
-    Map=#{Key=> String},
-    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests, next=?M},
+    Key=maps:new(),
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Key, numrequests=NumRequests, next=?M},
     NodePid ! {update, UpdateChord},
     NodePid ! {join, NPrime},
     {ok, ID}.
 
 closest_preceding_node(State, ID)->
-    % io:format("search table~n"),
     N=State#chord.id,
     Finger=State#chord.finger,
     search_table(?M, N, ID, Finger).
@@ -103,45 +108,33 @@ printNode(Chord)->
 chordNode(Chord)->
     receive
         {find_successor, ID, Node, Reply, Next}->
-            % io:format("received message to get successor~n"),
             N=Chord#chord.id,
             Successor=Chord#chord.successor,
             X=atom_to_int(N),
             Y=atom_to_int(Successor),
             Z=atom_to_int(ID),
-            % io:format("Reply ~s,ID ~w, N ~w, Successor ~w~n", [Reply,ID,N,Successor]),
             if
                 (X>Y) and ((Z>X) or (Z=<Y))-> whereis(Node) ! {Reply, Successor, Next};
                 (X<Y) and (Z>X) and (Z=<Y)-> whereis(Node) ! {Reply, Successor, Next};
-                % (ID>N) and (ID=<Successor)-> whereis(Node) ! {Reply, Successor, Next};
                 true->
                     NPrime=closest_preceding_node(Chord, ID),
                     if 
                         NPrime == N ->
-                            % io:format("ID ~w NPRIME ~w~n",[ID, NPrime]),
                             whereis(Node) ! {Reply, NPrime, Next};
                         true->
-                            % io:format("ENTERED~n"),
                             whereis(NPrime) ! {find_successor, ID, Node, Reply, Next}
                     end
             end;            
         {getSuccessor, Successor, _}->
-            % io:format("received successor~n"),
             UpdateChord=Chord#chord{successor=Successor},
             chordNode(UpdateChord);
         {fix_key, Successor, Next}->
-            % io:format("Received Successor ~w, Next ~w~n", [Successor, Next]),
             UpdateChord=update_key_entry(Chord,Successor,Next),
             chordNode(UpdateChord);
         {join, N}->whereis(N) ! {find_successor, Chord#chord.id, Chord#chord.id, getSuccessor, 0};
         {check_predecessor, ID}->
-            % io:format("STABILIZATION FROM ~w~n", [ID]),
             whereis(ID) ! {stabilize,Chord#chord.predecessor};
         {stabilize, ID}->
-            % if
-            %     Chord#chord.id=='684329801336223661356952546078269889038938702779'->io:format("three calls ~w~n",[ID]);
-            %     true->ok
-            % end,
             if
                 ID==nill->notify(Chord#chord.successor,Chord#chord.id);
                 true->
@@ -175,7 +168,26 @@ chordNode(Chord)->
             Z=atom_to_int(Chord#chord.id),
             if
                 (Chord#chord.predecessor==nill)->
-                    UpdateChord=Chord#chord{predecessor=ID},
+                    Pred1 = fun(K,V) -> 
+                        K_int = atom_to_int(K),
+                        if 
+                            K_int > Z ->
+                                true;
+                            true ->
+                                K_int=<Y
+                        end
+                    end,
+                    Pred2 = fun(K,V) -> 
+                        K_int = atom_to_int(K),
+                        if 
+                            K_int > Z ->
+                                false;
+                            true ->
+                                K_int>Y
+                        end
+                    end,
+                    whereis(ID) ! {update_keys, maps:filter(Pred1,Chord#chord.key)},
+                    UpdateChord=Chord#chord{predecessor=ID, key=maps:filter(Pred2,Chord#chord.key)},
                     %find keys smaller than new predecessor (adjusted to circle), send them and then remove them from me
                     chordNode(UpdateChord);
                 (Z>X) and (Y>X) and (Y<Z)->
@@ -188,7 +200,24 @@ chordNode(Chord)->
             end;
         {update, UpdateChord}-> 
             chordNode(UpdateChord);
+        {update_keys, Keys}-> 
+            UpdateChord=Chord#chord{key=maps:merge(Keys, Chord#chord.key)},
+            chordNode(UpdateChord);
         {terminate} -> io:format("received signal to stop");
+        {find_insert_point, Key, Node, Data}->
+            self() ! {find_successor, Key, Node, insert_point, {Key, Data}};
+        {search_key, Key, Node}->
+            self() ! {find_successor, Key, Node, search_point, Key};
+        {search_point, Successor, Key}->
+            whereis(Successor) ! {fetch_key, Key};
+        {fetch_key, Key}->
+            io:format("KEY FOUND AT NODE ~w with DATA:~s",[Chord#chord.id, maps:get(Key, Chord#chord.key)]);
+        {insert_point, Successor, {Key, Data}}->
+            whereis(Successor) ! {insert, {Key, Data}};
+        {insert, {Key, Data}}->
+            io:format("INSERTED"),
+            UpdateChord=Chord#chord{key=maps:put(Key,Data,Chord#chord.key)},
+            chordNode(UpdateChord);
         print->printNode(Chord)
         after ?STABILIZE_TIME ->
             whereis(Chord#chord.successor) ! {check_predecessor, Chord#chord.id},
@@ -212,7 +241,6 @@ fix_fingers(State)->
     self() ! {find_successor, list_to_atom(integer_to_list(ID)), State#chord.id, fix_key, Next}.
 
 update_key_entry(State,Successor,Next)->
-    % io:format("Update key entry ~w ~w ~n",[Next,Successor]),
     Finger=State#chord.finger,
     NewFinger=lists:sublist(Finger,Next-1) ++ [Successor] ++ lists:nthtail(Next,Finger),
     NewState=State#chord{finger=NewFinger, next=Next},
