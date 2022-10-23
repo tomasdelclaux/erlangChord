@@ -5,9 +5,6 @@
 -record(tracker, {numNodes, finishedNodes}).
 -define(M, 160).
 
-getHash(Data) ->  
-    binary:decode_unsigned(crypto:hash(sha, Data)).
-
 % getNext(FingerTable)->
 %     %%TODO
 
@@ -17,6 +14,15 @@ getHash(Data) ->
 
 %% need to implement stabilise too
 
+
+init()->
+    {ok,[NumNodes, NumRequests]} = 
+        io:fread("Enter number of chord nodes and number of requests", "~d~d"),
+    ok.
+
+%% CHORD IMPLEMENTATION FUNCTIONS
+
+% FINGER TABLE
 create_finger_table(_,0)->
     [];
 
@@ -30,33 +36,81 @@ finger_print([H|T]) ->
     io:format("    ~p~n", [H]),
     [H|finger_print(T)].
 
+% HASHING
+getHash(Data) ->  
+    binary:decode_unsigned(crypto:hash(sha, Data)).
 
-init()->
-    {ok,[NumNodes, NumRequests]} = 
-        io:fread("Enter number of chord nodes and number of requests", "~d~d"),
-    ok.
+%% CHORD NODE API
 
+%CREATE A NODE AND A NETWORK WITH THE GIVEN NUMBER OF REQUESTS
 create(NumRequests)->
     Chord=#chord{},
     NodePid = spawn_link(?MODULE, chordNode, [Chord]),
-    ID=getHash(pid_to_list(NodePid)),
-    register(list_to_atom(integer_to_list(ID)), NodePid),
+    Id=getHash(pid_to_list(NodePid)),
+    ID=list_to_atom(integer_to_list(Id)),
+    register(ID, NodePid),
     Finger=create_finger_table(ID,?M),
     Key=getHash("1"),
     String="I am node 1",
     Map=#{Key=> String},
     UpdateChord = #chord{id=ID, finger=Finger, successor=ID, key=Map, numrequests=NumRequests},
     NodePid ! {update, UpdateChord},
-    ok.
+    {ok, ID}.
 
-% join(Node, )
+%JOIN FUNCTION - NEW NODE IS N and NPRIME IS A NODE IN THE NETWORK
+join(NPrime, NumRequests, NodeNum)->
+    Chord=#chord{},
+    NodePid = spawn_link(?MODULE, chordNode, [Chord]),
+    Id=getHash(pid_to_list(NodePid)),
+    ID=list_to_atom(integer_to_list(Id)),
+    register(ID, NodePid),
+    Finger=create_finger_table(ID,?M),
+    Key=getHash(integer_to_list(NodeNum)),
+    String="I am node "++integer_to_list(NodeNum),
+    Map=#{Key=> String},
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, key=Map, numrequests=NumRequests},
+    NodePid ! {update, UpdateChord},
+    NodePid ! {join, NPrime}.
+    
 
-% start(NumRequests)->
-%     Chord=#chord{numrequests=NumRequests},
-%     ActorPid = spawn_link(?MODULE, loop, [Chord]),
-%     PidHash = getHash(pid_to_list(ActorPid)),
-%     register(PidHash, ActorPid),
-%     ok.
+%FIND SUCCESSOR
+find_successor(State, ID)->
+    io:format("find successor~n"),
+    N=State#chord.id,
+    Successor=State#chord.successor,
+    if
+        (ID>N) and (ID=<Successor)-> Successor;
+        true->
+            NPrime=closest_preceding_node(State, ID),
+            io:format("Nprime ~w with ~w", [NPrime, whereis(NPrime)]),
+            if 
+                NPrime == N -> N;
+                true-> 
+                    whereis(NPrime) ! {find_successor, ID},
+                    receive
+                        {successor, Successor}->Successor
+                    end
+            end
+    end.
+
+closest_preceding_node(State, ID)->
+    io:format("search table~n"),
+    N=State#chord.id,
+    Finger=State#chord.finger,
+    search_table(?M, N, ID, Finger).
+
+search_table(0,N,_,_)->
+    io:format("Ending search table ~w~n", [N]),
+    N;
+
+search_table(I, N, ID, Finger)->
+    Nth=lists:nth(I, Finger),
+    if
+        (Nth>N) and (Nth<ID)->Nth;
+        true->
+            search_table(I-1, N, ID, Finger)
+    end.
+
 printNode(Chord)->
     io:format("OUTPUTTING STATE OF NODE:\n"),
     io:format("ID: ~w~n", [Chord#chord.id]),
@@ -68,25 +122,34 @@ printNode(Chord)->
     io:format("~nnumRequests: ~w~n", [Chord#chord.numrequests]).
 
 chordNode(Chord)->
+    io:format("RUNNING~n"),
     receive
         {lookup, Key} ->io:format("where is this key"),
         Num=Chord#chord.numrequests,
         case Num of
-            0->%SEND MESSAGE TO TRACKER TO STOP;
-                chordNode(Chord);
+            0->ok;%SEND MESSAGE TO TRACKER TO STOP;
             _->
                 NewChord=Chord#chord{numrequests=Num-1},
-                self() ! {update, NewChord},
-                chordNode(Chord)         
+                self() ! {update, NewChord}
         end;
+        {find_successor, ID}->
+            io:format("received message to get successor~n"),
+            whereis(ID) ! {successor, find_successor(Chord, ID)};
+        {successor, Successor}->
+            io:format("received successor"),
+            UpdateChord=Chord#chord{successor=Successor},
+            chordNode(UpdateChord);
+        {join, N}->
+            whereis(N) ! {find_successor, Chord#chord.id};
         {update, UpdateChord}->
             chordNode(UpdateChord);
         {terminate} -> io:format("received signal to stop");
         print->
-            printNode(Chord),
-            chordNode(Chord)
+            printNode(Chord);
+        _->
+            io:format("received rubbish")
     end,
-    ok.
+    chordNode(Chord).
 
 stop()->
     exit(self(),kill).
@@ -94,6 +157,8 @@ stop()->
 print(Pid)->
     Pid ! print,
     ok.
+
+
 
 %%ACTOR TO KEEP TRACK OF FINISHING ACTORS
 %%TRACKER FUNCTIONS
