@@ -3,7 +3,8 @@
 -author("Tomas Delclaux Rodriguez-Rey and Ariel Weitzenfeld").
 -record(chord, {id, finger, successor, predecessor, key, numrequests}).
 -record(tracker, {numNodes, finishedNodes}).
--define(M, 160).
+-define(M, 7).
+-define(STABILIZE_TIME,2000).
 
 % getNext(FingerTable)->
 %     %%TODO
@@ -53,7 +54,7 @@ create(NumRequests)->
     Key=getHash("1"),
     String="I am node 1",
     Map=#{Key=> String},
-    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, key=Map, numrequests=NumRequests},
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests},
     NodePid ! {update, UpdateChord},
     {ok, ID}.
 
@@ -68,30 +69,10 @@ join(NPrime, NumRequests, NodeNum)->
     Key=getHash(integer_to_list(NodeNum)),
     String="I am node "++integer_to_list(NodeNum),
     Map=#{Key=> String},
-    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, key=Map, numrequests=NumRequests},
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests},
     NodePid ! {update, UpdateChord},
-    NodePid ! {join, NPrime}.
-    
-
-%FIND SUCCESSOR
-find_successor(State, ID)->
-    io:format("find successor~n"),
-    N=State#chord.id,
-    Successor=State#chord.successor,
-    if
-        (ID>N) and (ID=<Successor)-> Successor;
-        true->
-            NPrime=closest_preceding_node(State, ID),
-            io:format("Nprime ~w with ~w", [NPrime, whereis(NPrime)]),
-            if 
-                NPrime == N -> N;
-                true-> 
-                    whereis(NPrime) ! {find_successor, ID},
-                    receive
-                        {successor, Successor}->Successor
-                    end
-            end
-    end.
+    NodePid ! {join, NPrime},
+    {ok, ID}.
 
 closest_preceding_node(State, ID)->
     io:format("search table~n"),
@@ -122,34 +103,69 @@ printNode(Chord)->
     io:format("~nnumRequests: ~w~n", [Chord#chord.numrequests]).
 
 chordNode(Chord)->
-    io:format("RUNNING~n"),
     receive
-        {lookup, Key} ->io:format("where is this key"),
-        Num=Chord#chord.numrequests,
-        case Num of
-            0->ok;%SEND MESSAGE TO TRACKER TO STOP;
-            _->
-                NewChord=Chord#chord{numrequests=Num-1},
-                self() ! {update, NewChord}
-        end;
-        {find_successor, ID}->
+        {find_successor, ID, Node}->
             io:format("received message to get successor~n"),
-            whereis(ID) ! {successor, find_successor(Chord, ID)};
-        {successor, Successor}->
-            io:format("received successor"),
+            N=Chord#chord.id,
+            Successor=Chord#chord.successor,
+            if
+                (ID>N) and (ID=<Successor)-> whereis(Node) ! {updateSuc, Successor};
+                true->
+                    NPrime=closest_preceding_node(Chord, ID),
+                    if 
+                        NPrime == N ->whereis(Node) ! {updateSuc, NPrime};
+                        true-> whereis(NPrime) ! {find_successor, ID, Node}
+                    end
+            end;            
+        {updateSuc, Successor}->
+            io:format("received successor~n"),
             UpdateChord=Chord#chord{successor=Successor},
             chordNode(UpdateChord);
-        {join, N}->
-            whereis(N) ! {find_successor, Chord#chord.id};
-        {update, UpdateChord}->
-            chordNode(UpdateChord);
+        {join, N}->whereis(N) ! {find_successor, Chord#chord.id, Chord#chord.id};
+        {stabilize, ID}->
+            % io:format("STABILIZATION FROM ~w~n", [ID]),
+            whereis(ID) ! {check_predecessor,Chord#chord.predecessor};
+        {check_predecessor, ID}->
+            if
+                ID==nill->notify(Chord#chord.successor,Chord#chord.id);
+                true->
+                    if
+                        (Chord#chord.id==Chord#chord.successor)->
+                            UpdateChord=Chord#chord{successor=ID},
+                            notify(Chord#chord.successor,Chord#chord.id),
+                            chordNode(UpdateChord);
+                        (ID>Chord#chord.id) and (ID<Chord#chord.successor)->
+                            UpdateChord=Chord#chord{successor=ID},
+                            notify(Chord#chord.successor,Chord#chord.id),
+                            chordNode(UpdateChord);
+                        true->notify(Chord#chord.successor,Chord#chord.id)
+                    end
+            end;
+        {notify, ID}->
+            % io:format("NOTIFICATION FROM ~w~n", [ID]),
+            if
+                (Chord#chord.predecessor==nill)or((ID>Chord#chord.predecessor) and (ID<Chord#chord.id))->
+                    UpdateChord=Chord#chord{predecessor=ID},
+                    chordNode(UpdateChord);
+                true->ok
+            end;
+        {update, UpdateChord}->chordNode(UpdateChord);
         {terminate} -> io:format("received signal to stop");
-        print->
-            printNode(Chord);
-        _->
-            io:format("received rubbish")
+        print->printNode(Chord)
+        after ?STABILIZE_TIME ->
+            whereis(Chord#chord.successor) ! {stabilize, Chord#chord.id}
     end,
     chordNode(Chord).
+
+notify(Successor, Me)->
+    if
+        Successor==Me->ok;
+        true->
+            whereis(Successor) ! {notify, Me}
+    end.
+
+% fix_fingers(Next)->
+
 
 stop()->
     exit(self(),kill).
@@ -192,3 +208,26 @@ startTrack()->
     State= #tracker{numNodes=0, finishedNodes=Set},
     ActorPid = spawn_link(?MODULE, track, [State]),
     register(list_to_atom("chord_tracker"), ActorPid).
+
+
+
+
+
+%% FIND SUCCESSOR
+% find_successor(State, ID)->
+%     N=State#chord.id,
+%     Successor=State#chord.successor,
+%     if
+%         (ID>N) and (ID=<Successor)-> Successor;
+%         true->
+%             NPrime=closest_preceding_node(State, ID),
+%             io:format("Nprime ~w with ~w", [NPrime, whereis(NPrime)]),
+%             if 
+%                 NPrime == N -> N;
+%                 true-> 
+%                     whereis(NPrime) ! {find_successor, ID},
+%                     receive
+%                         {successor, Successor}->Successor
+%                     end
+%             end
+%     end.
