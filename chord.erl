@@ -1,20 +1,13 @@
 -module(chord).
 -compile(export_all).
 -author("Tomas Delclaux Rodriguez-Rey and Ariel Weitzenfeld").
--record(chord, {id, finger, successor, predecessor, key, numrequests}).
+-record(chord, {id, finger, successor, predecessor, key, numrequests, next}).
 -record(tracker, {numNodes, finishedNodes}).
 -define(M, 7).
 -define(STABILIZE_TIME,2000).
+-define(KEY_FIX_TIME,5000).
 
-% getNext(FingerTable)->
-%     %%TODO
-
-%% join()->
-    %%TODO
-
-
-%% need to implement stabilise too
-
+%% MAIN PROGRAM
 
 init()->
     {ok,[NumNodes, NumRequests]} = 
@@ -24,11 +17,11 @@ init()->
 %% CHORD IMPLEMENTATION FUNCTIONS
 
 % FINGER TABLE
-create_finger_table(_,0)->
+create_finger_table(0)->
     [];
 
-create_finger_table(ID,M)->
-    [ID|create_finger_table(ID,M-1)].
+create_finger_table(M)->
+    [0|create_finger_table(M-1)].
 
 finger_print([])-> 
     [];
@@ -50,11 +43,11 @@ create(NumRequests)->
     Id=getHash(pid_to_list(NodePid)),
     ID=list_to_atom(integer_to_list(Id)),
     register(ID, NodePid),
-    Finger=create_finger_table(ID,?M),
+    Finger=create_finger_table(?M),
     Key=getHash("1"),
     String="I am node 1",
     Map=#{Key=> String},
-    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests},
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests, next=?M},
     NodePid ! {update, UpdateChord},
     {ok, ID}.
 
@@ -65,11 +58,11 @@ join(NPrime, NumRequests, NodeNum)->
     Id=getHash(pid_to_list(NodePid)),
     ID=list_to_atom(integer_to_list(Id)),
     register(ID, NodePid),
-    Finger=create_finger_table(ID,?M),
+    Finger=create_finger_table(?M),
     Key=getHash(integer_to_list(NodeNum)),
     String="I am node "++integer_to_list(NodeNum),
     Map=#{Key=> String},
-    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests},
+    UpdateChord = #chord{id=ID, finger=Finger, successor=ID, predecessor=nill, key=Map, numrequests=NumRequests, next=?M},
     NodePid ! {update, UpdateChord},
     NodePid ! {join, NPrime},
     {ok, ID}.
@@ -104,24 +97,28 @@ printNode(Chord)->
 
 chordNode(Chord)->
     receive
-        {find_successor, ID, Node}->
+        {find_successor, ID, Node, Reply, Next}->
             io:format("received message to get successor~n"),
             N=Chord#chord.id,
             Successor=Chord#chord.successor,
+            io:format("ID ~w, N ~w, Successor ~w", [ID,N,Successor]),
             if
-                (ID>N) and (ID=<Successor)-> whereis(Node) ! {updateSuc, Successor};
+                (ID>N) and (ID=<Successor)-> whereis(Node) ! {Reply, Successor, Next};
                 true->
                     NPrime=closest_preceding_node(Chord, ID),
                     if 
-                        NPrime == N ->whereis(Node) ! {updateSuc, NPrime};
-                        true-> whereis(NPrime) ! {find_successor, ID, Node}
+                        NPrime == N ->whereis(Node) ! {Reply, NPrime, Next};
+                        true-> whereis(NPrime) ! {find_successor, ID, Node, Reply, Next}
                     end
             end;            
-        {updateSuc, Successor}->
+        {getSuccessor, Successor}->
             io:format("received successor~n"),
             UpdateChord=Chord#chord{successor=Successor},
             chordNode(UpdateChord);
-        {join, N}->whereis(N) ! {find_successor, Chord#chord.id, Chord#chord.id};
+        {fix_key, Successor, Next}->
+            UpdateChord=update_key_entry(Chord,Successor,Next),
+            chordNode(UpdateChord);
+        {join, N}->whereis(N) ! {find_successor, Chord#chord.id, Chord#chord.id, getSuccessor, 0};
         {stabilize, ID}->
             % io:format("STABILIZATION FROM ~w~n", [ID]),
             whereis(ID) ! {check_predecessor,Chord#chord.predecessor};
@@ -153,7 +150,8 @@ chordNode(Chord)->
         {terminate} -> io:format("received signal to stop");
         print->printNode(Chord)
         after ?STABILIZE_TIME ->
-            whereis(Chord#chord.successor) ! {stabilize, Chord#chord.id}
+            whereis(Chord#chord.successor) ! {stabilize, Chord#chord.id},
+            fix_fingers(Chord)
     end,
     chordNode(Chord).
 
@@ -164,8 +162,19 @@ notify(Successor, Me)->
             whereis(Successor) ! {notify, Me}
     end.
 
-% fix_fingers(Next)->
+fix_fingers(State)->
+    if
+        State#chord.next+1>?M->Next=1;
+        true->Next=State#chord.next+1
+    end,
+    ID=list_to_integer(atom_to_list(State#chord.id))+math:pow(2, Next-1),
+    self() ! {find_successor, ID, State#chord.id, fix_key, Next}.
 
+update_key_entry(State,Successor,Next)->
+    Finger=State#chord.finger,
+    NewFinger=lists:sublist(Finger,Next-1) ++ [Successor] ++ lists:nthtail(Next,Finger),
+    NewState=State#chord{finger=NewFinger, next=Next},
+    NewState.
 
 stop()->
     exit(self(),kill).
