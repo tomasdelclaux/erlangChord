@@ -416,4 +416,4 @@ In order to run search and insert manually comment line 262 as this executes the
 
 ## LARGEST NETWORK?
 The largest Network we were able to run was 100 nodes.
-With 1000 nodes the stability of the program is not good and there are problems betweent the scheduler and the update of the node state within the timer.
+With 1000 nodes the stability of the program is not good and there are problems between the scheduler and the update of the node state within the timer.
