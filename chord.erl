@@ -4,7 +4,8 @@
 -record(chord, {id, finger, successor, predecessor, key, numrequests, next, numNodes}).
 -record(tracker, {numNodes, finishedNodes, totalHops, totalRequests, maxRequests}).
 -define(M, 160).
--define(STABILIZE_TIME,50).
+-define(STABILIZE_TIME,1000).
+-define(INIT_TIMEOUT,100).
 -define(KEY_FIX_TIME,5000).
 
 %% MAIN PROGRAM
@@ -23,7 +24,6 @@ add_nodes(0,_,_,_)->
 add_nodes(NumNodes, FirstNode, NumRequests, MaxNodes)->
     join(FirstNode, NumRequests, MaxNodes),
     add_nodes(NumNodes-1, FirstNode, NumRequests, MaxNodes),
-    % search(FirstNode, NumNodes),
     ok.
 
 init()->
@@ -31,7 +31,7 @@ init()->
     startTrack(NumNodes, NumRequests),
     {ok,FirstNode}=create(0, NumNodes),
     add_nodes(NumNodes-1, FirstNode, 0, NumNodes),
-    timer:sleep(round(NumNodes*1000)),
+    timer:sleep(round(NumNodes*?INIT_TIMEOUT)),
     insert_data(NumNodes,FirstNode),
     ok.
 
@@ -235,13 +235,16 @@ chordNode(Chord)->
         {search_point, Successor, {Key,Counter}}->
             whereis(Successor) ! {fetch_key, {Key, Counter}};
         {fetch_key, {Key,Counter}}->
-            % whereis(chord_tracker) ! {hops, {Chord#chord.id, Counter, Chord#chord.numrequests+1}},
+            case check_undefined(chord_tracker) of
+                false->whereis(chord_tracker) ! {hops, {Chord#chord.id, Counter, Chord#chord.numrequests+1}};
+                true->ok
+            end,
             UpdateChord=Chord#chord{numrequests=Chord#chord.numrequests+1},
             Res=maps:find(Key, Chord#chord.key),
             case Res of
-                error->io:format("KEY NOT FOUND ~w~n",[Key]);
+                error->ok;
                 {ok, V}->io:format("KEY FOUND AT NODE ~w with DATA:~s~n",[Chord#chord.id, V]);
-                _->io:format("ERROR~n")
+                _->ok
             end,
             chordNode(UpdateChord);
         {insert_point, Successor, {Key, Data}}->
@@ -249,12 +252,14 @@ chordNode(Chord)->
         {insert, {Key, Data}}->
             UpdateChord=Chord#chord{key=maps:put(Key,Data,Chord#chord.key)},
             chordNode(UpdateChord);
-        print->printNode(Chord);
-        terminate -> io:format("received signal to stop")
+        print->printNode(Chord)
         after ?STABILIZE_TIME ->
-            whereis(Chord#chord.successor) ! {check_predecessor, Chord#chord.id},
-            fix_fingers(Chord)
-            % search(Chord#chord.id, rand:uniform(Chord#chord.numNodes))
+            case check_undefined(Chord#chord.successor) of
+                false->whereis(Chord#chord.successor) ! {check_predecessor, Chord#chord.id};
+                _->ok
+            end,
+            fix_fingers(Chord),
+            search(Chord#chord.id, rand:uniform(Chord#chord.numNodes))
     end,
     chordNode(Chord).
 
@@ -292,6 +297,11 @@ atom_to_int(Atom)->
         _->list_to_integer(atom_to_list(Atom))
     end.
 
+check_undefined(Atom)->
+    case whereis(Atom) of
+        undefined->true;
+    _->false
+    end.
 
 %%ACTOR TO KEEP TRACK OF FINISHING ACTORS
 %%TRACKER FUNCTIONS
@@ -309,25 +319,29 @@ track(State)->
                 _->NewTrack=State#tracker{totalHops=Hops, totalRequests=Reqs},
                  track(NewTrack)
             end
-    after 10 ->
+    after 1 ->
         L = sets:to_list(State#tracker.finishedNodes),
         NumActors=State#tracker.numNodes,
         case length(L) of
             NumActors -> 
-                io:format("AVERAGE HOPS PER SEARCH ~w~n", [State#tracker.totalHops/State#tracker.totalRequests]);
-                % sendTerminate(L);
-            _->track(State)
+                io:format("AVERAGE HOPS PER SEARCH ~w~n", [State#tracker.totalHops/State#tracker.totalRequests]),
+                io:format("CLOSING~n"),
+                stop();
+            _->
+                X=NumActors * State#tracker.maxRequests,
+                Y=State#tracker.totalRequests,
+                if 
+                    X < Y ->
+                        io:format("AVERAGE HOPS PER SEARCH ~w~n", [State#tracker.totalHops/State#tracker.totalRequests]),
+                        io:format("CLOSING~n"),
+                        stop();
+                    true -> track(State)
+                end
         end
     end.
 
-sendTerminate([])->
-    ok;
-
-sendTerminate([H|T])->
-    whereis(H) ! terminate,
-    sendTerminate(T).
-
 startTrack(NumNodes, NumRequests)->
+    timer:sleep(round(NumNodes*?INIT_TIMEOUT)),
     statistics(wall_clock),
     Set = sets:new(),
     State= #tracker{numNodes=NumNodes, maxRequests=NumRequests, finishedNodes=Set, totalHops=0, totalRequests=0},
